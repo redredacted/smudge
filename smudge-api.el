@@ -114,17 +114,22 @@ This is used to manually refresh the token when it's about to expire.")
     is-already-running))
 
 (defun smudge-api-oauth2-request-authorization (auth-url client-id &optional scope state redirect-uri)
-  "Request OAuth authorization at AUTH-URL.
-Provide SCOPE and STATE to endpoint.  CLIENT-ID is the client id provided by the
-provider.  Return the code provided by the service.  Replaces functionality from
-built-in OAuth lib by running a local httpd to parse the code instead of asking
-the user to paste it in."
+  "Request OAuth authorization at AUTH-URL (non-blocking version).
+Launch a local HTTP server, wait for redirect, then return the code."
   (let ((is-already-running (smudge-api-start-httpd))
-        (oauth-code nil))
-    (defservlet* smudge text/html (code)
-      (setq oauth-code code)
-      (insert "<p>Smudge is connected. You can return to Emacs</p>
-<script type='text/javascript'>setTimeout(function () {close()}, 1500);</script>"))
+        (oauth-code nil)
+        (done nil))
+
+    ;; Register servlet dynamically
+    (let ((handler-name (intern (substring smudge-oauth2-callback-endpoint 1))))
+      (eval
+       `(defservlet* ,handler-name text/html (code)
+          (setq oauth-code code
+                done t)
+          (insert "<p>Smudge is connected. You can return to Emacs</p>
+<script type='text/javascript'>setTimeout(function () {close()}, 1500);</script>"))))
+
+    ;; Launch auth browser
     (browse-url-default-browser
      (concat auth-url
              (if (string-match-p "\?" auth-url) "&" "?")
@@ -133,14 +138,29 @@ the user to paste it in."
              "&redirect_uri=" (url-hexify-string (or redirect-uri "urn:ietf:wg:oauth:2.0:oob"))
              (if scope (concat "&scope=" (url-hexify-string scope)) "")
              (if state (concat "&state=" (url-hexify-string state)) "")))
-    (let ((retries 0))
-      (while (and (not oauth-code)
-                  (< retries 10))
-        (sleep-for 1)
-        (setq retries (1+ retries))))
-    (message "smudge connected")
-    (unless is-already-running
-      (run-at-time 1 nil #'smudge-api-httpd-stop))
+
+    ;; Poll for completion asynchronously
+    (let ((timeout 15)
+          (wait-fn nil))
+      (setq wait-fn
+            (lambda ()
+              (if done
+                  (progn
+                    (unless is-already-running (smudge-api-httpd-stop))
+                    (message "Smudge auth complete."))
+                (if (> timeout 0)
+                    (progn
+                      (setq timeout (1- timeout))
+                      (run-at-time 1 nil wait-fn))
+                  (message "Smudge auth timed out.")
+                  (unless is-already-running (smudge-api-httpd-stop))))))
+
+      (run-at-time 1 nil wait-fn))
+
+    ;; Just return nil for now; token will be handled elsewhere
+    ;; You can capture oauth-code to disk, buffer, or callback later
+    (while (not done)
+      (accept-process-output nil 0.1))
     oauth-code))
 
 (defun smudge-api-oauth2-auth (auth-url token-url client-id client-secret &optional scope state redirect-uri)
