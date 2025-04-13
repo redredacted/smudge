@@ -121,7 +121,7 @@ built-in OAuth lib by running a local httpd to parse the code instead of asking
 the user to paste it in."
   (let ((is-already-running (smudge-api-start-httpd))
         (oauth-code nil))
-    (defservlet* smudge-api-callback text/html (code)
+    (defservlet* smudge text/html (code)
       (setq oauth-code code)
       (insert "<p>Smudge is connected. You can return to Emacs</p>
 <script type='text/javascript'>setTimeout(function () {close()}, 1500);</script>"))
